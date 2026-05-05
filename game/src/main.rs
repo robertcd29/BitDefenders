@@ -1,11 +1,7 @@
-use anyhow::{Context, Ok};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use std::collections::HashMap;
-mod protocol;
-use crate::protocol::{HelloArgs, LoginArgs, MoveArgs, StartMatchArgs, StartTurnArgs};
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebSocketMessage {
@@ -21,144 +17,222 @@ pub enum Command {
     Error,
     Ready,
     Practice,
+    Challenge,
     StartMatch,
     StartTurn,
     Move,
+    Shoot,
     EndMatch,
 }
 
-
-
-async fn send_command<
-    S: SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
->(
-    write: &mut S,
-    msg: WebSocketMessage,
-) -> anyhow::Result<()> {
-    let msg_deserialized = serde_json::to_string(&msg).context("serialize message")?;
-    write
-        .send(Message::Text(msg_deserialized.into()))
-        .await
-        .context("send message")?;
-    Ok(())
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartMatchArgs {
+    pub your_player_id: i32,
+    pub config: GameConfig,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let url = "wss://bitdefenders.cvjd.me/ws";
-    let (ws, _) = connect_async(url).await.unwrap();
-    let (mut write, mut read) = ws.split();
-    let mut myPlayerId: i32 = -1;
-    let mut current_turn: StartTurnArgs;
-    println!("connected");
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GameConfig {
+    pub width: usize,
+    pub height: usize,
+}
 
-    
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartTurnArgs {
+    pub turn: i32,
+    pub state: GameState,
+}
 
-    while let Some(msg) = read.next().await {
-        let msg = msg.unwrap();
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GameState {
+    pub heroes: Vec<Hero>,
+    pub projectiles: Vec<Projectile>,
+    pub walls: Vec<Wall>,
+}
 
-        let text = match msg {
-            Message::Text(text) => text,
-            Message::Ping(payload) => {
-                write.send(Message::Pong(payload)).await.unwrap();
-                continue;
-            }
-            Message::Pong(_) => {
-                println!("pong");
-                continue;
-            }
-            Message::Binary(_) => {
-                println!("binary message ignored");
-                continue;
-            }
-            Message::Close(frame) => {
-                println!("closed: {frame:?}");
-                break;
-            }
-            Message::Frame(_) => continue,
-        };
-        let message: WebSocketMessage = serde_json::from_str(&text).unwrap();
-        println!("{message:?}");
-        match message.command {
-            Command::Hello => {
-                if let Err(e) = send_command(
-                    &mut write,
-                    WebSocketMessage {
-                        command: Command::Login,
-                        args: serde_json::json!({"version": 1, "name": "robertcd29"}),
-                    },
-                )
-                .await {
-                    println!("Failed to send login command: {e}");
-                    break;
-                }
-            }
-            Command::Login => {
-                panic!("What are you doing here?");
-            },
-            Command::Error => {
-                println!("Error: {message:?}");
-                break;
-            }
-            Command::Ready => {
-                if let Err(e) = send_command(
-                    &mut write,
-                    WebSocketMessage {
-                        command: Command::Practice,
-                        args: serde_json::json!({}),
-                    },
-                ).await {
-                    println!("Failed to send practice command: {e}");
-                    break;
-                }
-            },
-            Command::Practice => {
-                println!("Entered practice mode!");
-            },
-            Command::StartMatch => {
-                let response:StartMatchArgs = serde_json::from_value(message.args).unwrap();
-                myPlayerId = response.your_player_id;
-                
-            },
-            Command::StartTurn => {
-                current_turn = serde_json::from_value(message.args).unwrap();
-                let moveArgs = protocol::MoveArgs {
-                    hero_id: myPlayerId,
-                    x: -1,
-                    y: 1,
-                };
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Hero {
+    pub id: i32,
+    pub owner_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub hp: i32,
+    pub cooldown: i32,
+}
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Projectile {
+    pub x: i32,
+    pub y: i32,
+}
 
-                let response = send_command(
-                    &mut write,
-                    WebSocketMessage {
-                        command: Command::Move,
-                        args: serde_json::to_value(moveArgs).unwrap(),
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Wall {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MoveArgs {
+    pub hero_id: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
+async fn send_command<S>(write: &mut S, msg: WebSocketMessage)
+where
+    S: SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    if let Ok(text) = serde_json::to_string(&msg) {
+        let _ = write.send(Message::Text(text.into())).await;
+    }
+}
+
+fn bfs(
+    start: (usize, usize),
+    goal: (usize, usize),
+    width: usize,
+    height: usize,
+    walls: &HashMap<(usize, usize), bool>,
+) -> Option<Vec<(usize, usize)>> {
+    let mut queue = VecDeque::new();
+    let mut visited: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+
+    queue.push_back(start);
+    visited.insert(start, start);
+
+    while let Some((x, y)) = queue.pop_front() {
+        if (x as i32 - goal.0 as i32).abs() <= 3 && (y as i32 - goal.1 as i32).abs() <= 3 {
+            let mut path = Vec::new();
+            let mut current = (x, y);
+            while current != start {
+                path.push(current);
+                current = visited[&current];
+            }
+            path.reverse();
+            return Some(path);
+        }
+
+        for dx in &[-3, 0, 3] {
+            for dy in &[-3, 0, 3] {
+                if *dx == 0 && *dy == 0 { continue; }
+
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+
+                if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                    let next = (nx as usize, ny as usize);
+                    if !walls.contains_key(&next) && !visited.contains_key(&next) {
+                        visited.insert(next, (x, y));
+                        queue.push_back(next);
                     }
-                ).await?;
-
-                let args2 : MoveArgs = protocol::MoveArgs {
-                    hero_id: 1,
-                    x: 1,
-                    y: 1,
-                };
-
-                let response2 = send_command(
-                    &mut write,
-                    WebSocketMessage {
-                        command: Command::Move,
-                        args: serde_json::to_value(args2).unwrap(),
-                    }
-                ).await?;
-            },
-            Command::Move => {
-                println!("Move command response: {message:?}");
-            },
-            Command::EndMatch => {
-                println!("Match ended: {message:?}");
+                }
             }
         }
     }
-    Ok(())
+    None
 }
 
+#[tokio::main]
+async fn main() {
+    let (ws, _) = match connect_async("wss://bitdefenders.cvjd.me/ws").await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
+    };
+
+    let (mut write, mut read) = ws.split();
+    let mut my_player_id = -1;
+    let mut map_size = (51, 90);
+
+    while let Some(msg) = read.next().await {
+        let msg = match msg {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Ping(p) => {
+                let _ = write.send(Message::Pong(p)).await;
+                continue;
+            }
+            Message::Close(_) => break,
+            _ => continue,
+        };
+
+        let message: WebSocketMessage = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        match message.command {
+            Command::Hello => {
+                send_command(&mut write, WebSocketMessage {
+                    command: Command::Login,
+                    args: serde_json::json!({"version": 1, "name": "robertcd29"}),
+                }).await;
+            }
+            Command::Ready => {
+                send_command(&mut write, WebSocketMessage {
+                    command: Command::Practice,
+                    args: serde_json::json!({}),
+                }).await;
+            }
+            Command::Practice => {
+                println!("Entered practice mode");
+            }
+            Command::Challenge => {
+                println!("Entered challenge mode");
+            }
+            Command::StartMatch => {
+                if let Ok(args) = serde_json::from_value::<StartMatchArgs>(message.args) {
+                    my_player_id = args.your_player_id;
+                    map_size = (args.config.width, args.config.height);
+                }
+            }
+            Command::StartTurn => {
+                let turn_data = match serde_json::from_value::<StartTurnArgs>(message.args) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let mut walls = HashMap::new();
+                for w in &turn_data.state.walls {
+                    walls.insert((w.x as usize, w.y as usize), true);
+                }
+
+                let my_heroes: Vec<&Hero> = turn_data.state.heroes.iter()
+                    .filter(|h| h.owner_id == my_player_id).collect();
+                let enemies: Vec<&Hero> = turn_data.state.heroes.iter()
+                    .filter(|h| h.owner_id != my_player_id).collect();
+
+                for hero in my_heroes {
+                    let start = (hero.x as usize, hero.y as usize);
+                    let target = enemies.iter().min_by_key(|e| (e.x - hero.x).abs() + (e.y - hero.y).abs());
+
+                    if let Some(enemy) = target {
+                        let goal = (enemy.x as usize, enemy.y as usize);
+                        
+                        if let Some(path) = bfs(start, goal, map_size.0, map_size.1, &walls) {
+                            if let Some(next) = path.first() {
+                                send_command(&mut write, WebSocketMessage {
+                                    command: Command::Move,
+                                    args: serde_json::to_value(MoveArgs {
+                                        hero_id: hero.id,
+                                        x: next.0 as i32,
+                                        y: next.1 as i32,
+                                    }).unwrap(),
+                                }).await;
+                            }
+                        }
+                    }
+                }
+            }
+            Command::EndMatch | Command::Error => break,
+            _ => {}
+        }
+    }
+}
