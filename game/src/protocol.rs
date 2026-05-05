@@ -1,8 +1,4 @@
-//! Bit Defenders — WebSocket message envelope: `{ "command": string, "args": object }`.
-//! All commands use JSON objects for `args` (may be empty `{}`).
-
 use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: i32 = 1;
@@ -14,11 +10,14 @@ pub struct WebSocketMessage {
     pub args: serde_json::Value,
 }
 
-// --- Handshake & lobby ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloArgs {
-    pub version: i32,
+impl WebSocketMessage {
+    pub fn new(command: impl Into<String>, args: impl Serialize) -> Self {
+        Self {
+            command: command.into(),
+            args: serde_json::to_value(args)
+                .unwrap_or(serde_json::Value::Object(Default::default())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,38 +27,17 @@ pub struct LoginArgs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ReadyArgs {}
+pub struct PracticeArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChallengeArgs {
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PracticeArgs {
-    #[serde(default)]
-    pub seed: Option<u32>,
-}
-
-// --- Match ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Player {
-    pub id: i32,
-    pub name: String,
-    pub heroes: Vec<PlayerHeroSpawn>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlayerHeroSpawn {
-    pub id: i32,
-    pub x: i32,
-    pub y: i32,
-    #[serde(rename = "type")]
-    pub type_: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +50,22 @@ pub struct HeroTypeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerHeroSpawn {
+    pub id: i32,
+    pub x: i32,
+    pub y: i32,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Player {
+    pub id: i32,
+    pub name: String,
+    pub heroes: Vec<PlayerHeroSpawn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameConfig {
     pub width: i32,
     pub height: i32,
@@ -80,6 +74,12 @@ pub struct GameConfig {
     pub seed: u32,
     pub players: Vec<Player>,
     pub hero_types: HashMap<String, HeroTypeConfig>,
+}
+
+impl GameConfig {
+    pub fn sniper(&self) -> Option<&HeroTypeConfig> {
+        self.hero_types.get("sniper")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,30 +121,16 @@ pub struct GameState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartMatchArgs {
-    pub config: GameConfig,
-    pub state: GameState,
     pub match_id: String,
     pub your_player_id: i32,
+    pub config: GameConfig,
+    pub state: GameState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartTurnArgs {
     pub turn: i32,
     pub state: GameState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MoveArgs {
-    pub hero_id: i32,
-    pub x: i32,
-    pub y: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShootArgs {
-    pub hero_id: i32,
-    pub x: i32,
-    pub y: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,14 +148,30 @@ pub struct ErrorArgs {
     pub fatal: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PingArgs {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PongArgs {}
-
-/// Spectator / web UI: subscribe to match updates after optional HTTP discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatchArgs {
-    pub match_id: String,
+pub struct MoveArgs {
+    pub hero_id: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShootArgs {
+    pub hero_id: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
+pub mod cmd {
+    pub const HELLO: &str = "HELLO";
+    pub const LOGIN: &str = "LOGIN";
+    pub const READY: &str = "READY";
+    pub const PRACTICE: &str = "PRACTICE";
+    pub const CHALLENGE: &str = "CHALLENGE";
+    pub const START_MATCH: &str = "START_MATCH";
+    pub const START_TURN: &str = "START_TURN";
+    pub const MOVE: &str = "MOVE";
+    pub const SHOOT: &str = "SHOOT";
+    pub const END_MATCH: &str = "END_MATCH";
+    pub const ERROR: &str = "ERROR";
 }
