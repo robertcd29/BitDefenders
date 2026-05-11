@@ -12,5 +12,6 @@ tokio-tungstenite = { version = "0.24", features = ["connect", "rustls-tls-nativ
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 serde_json = "1.0.149"
 futures-util = "0.3"
+futures = "0.3.32"
 
 
