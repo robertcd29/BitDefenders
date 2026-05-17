@@ -5,6 +5,7 @@ mod protocol;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use protocol::ChallengeArgs;
 
 use bot::{Bot, Order};
 use net::send;
@@ -43,16 +44,17 @@ async fn main() {
 
                 match message.command.as_str() {
                     cmd::HELLO => {
-                        println!("[←] HELLO");
+                        println!("HELLO");
                         send(&mut write, WebSocketMessage::new(cmd::LOGIN, LoginArgs {
                             name: BOT_NAME.to_string(),
                             version: PROTOCOL_VERSION,
                         })).await;
                     }
                     cmd::READY => {
-                        println!("[←] READY");
+                        println!("READY");
                         send(&mut write, WebSocketMessage::new(
                             cmd::PRACTICE, PracticeArgs { seed: None }
+                            // cmd::CHALLENGE, ChallengeArgs { name: None, seed: None, ranked: Some(true) }
                         )).await;
                     }
                     cmd::START_MATCH => {
@@ -70,7 +72,7 @@ async fn main() {
                             Ok(a) => a,
                             Err(e) => { eprintln!("START_TURN parse error: {e}"); continue; }
                         };
-                        println!("[←] START_TURN {}", args.turn);
+                        println!("TURN {}", args.turn);
 
                         if let Some(b) = bot.as_mut() {
                             let orders = b.take_turn(args);
@@ -84,17 +86,18 @@ async fn main() {
                     }
                     cmd::END_MATCH => {
                         if let Ok(args) = serde_json::from_value::<protocol::EndMatchArgs>(message.args) {
-                            println!("[←] END_MATCH reason={} winner={:?}", args.reason, args.winner);
+                            println!("END_MATCH reason={} winner={:?}", args.reason, args.winner);
                         }
                         bot = None;
+                        break;
                     }
                     cmd::ERROR => {
                         if let Ok(args) = serde_json::from_value::<protocol::ErrorArgs>(message.args) {
-                            eprintln!("[←] ERROR [{}] {} fatal={}", args.code, args.message, args.fatal);
+                            eprintln!("ERROR [{}] {} fatal={}", args.code, args.message, args.fatal);
                             if args.fatal { std::process::exit(1); }
                         }
                     }
-                    other => println!("[←] Unknown: {other}"),
+                    other => println!("Unknown: {other}"),
                 }
             }
             _ => {}
