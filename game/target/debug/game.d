@@ -1,1 +1,1 @@
-C:\Bitdefender\game\target\debug\game.exe: C:\Bitdefender\game\src\bot.rs C:\Bitdefender\game\src\game.rs C:\Bitdefender\game\src\main.rs C:\Bitdefender\game\src\net.rs C:\Bitdefender\game\src\protocol.rs
+D:\BitdefenderRust\game\target\debug\game.exe: D:\BitdefenderRust\game\src\bot.rs D:\BitdefenderRust\game\src\game.rs D:\BitdefenderRust\game\src\main.rs D:\BitdefenderRust\game\src\net.rs D:\BitdefenderRust\game\src\protocol.rs

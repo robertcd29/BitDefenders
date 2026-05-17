@@ -41,27 +41,48 @@ pub fn astar_next_step_safe(
     }
 
     let goal_snapped = snap_to_grid(goal);
-    let mut heap: BinaryHeap<Reverse<(i32, (i32, i32))>> = BinaryHeap::new();
+
+    if (start.0 - goal_snapped.0).abs() <= 3 && (start.1 - goal_snapped.1).abs() <= 3 {
+        if start != goal_snapped
+            && in_bounds(goal_snapped.0, goal_snapped.1, width, height)
+            && on_grid(goal_snapped.0, goal_snapped.1)
+            && !overlaps_wall(goal_snapped.0, goal_snapped.1, walls)
+        {
+            return Some(goal_snapped);
+        }
+        for (dx, dy) in &DIRS {
+            let nx = start.0 + dx;
+            let ny = start.1 + dy;
+            if in_bounds(nx, ny, width, height) && on_grid(nx, ny) && !overlaps_wall(nx, ny, walls) {
+                let d = chebyshev((nx, ny), goal_snapped);
+                let d0 = chebyshev(start, goal_snapped);
+                if d < d0 {
+                    return Some((nx, ny));
+                }
+            }
+        }
+        return None;
+    }
+
+    let mut heap: BinaryHeap<Reverse<(i32, i32, i32)>> = BinaryHeap::new();
     let mut came_from: HashMap<(i32, i32), (i32, i32)> = HashMap::new();
     let mut g_score: HashMap<(i32, i32), i32> = HashMap::new();
 
-    heap.push(Reverse((0, start)));
+    heap.push(Reverse((0, start.0, start.1)));
     came_from.insert(start, start);
     g_score.insert(start, 0);
 
-    while let Some(Reverse((_, (x, y)))) = heap.pop() {
+    while let Some(Reverse((_, x, y))) = heap.pop() {
+        let cur = (x, y);
+
         if (x - goal_snapped.0).abs() <= 3 && (y - goal_snapped.1).abs() <= 3 {
-            let mut cur = (x, y);
-            loop {
-                let prev = came_from[&cur];
-                if prev == start {
-                    return Some(cur);
-                }
-                cur = prev;
+            if cur == start {
+                continue;
             }
+            return reconstruct_first_step(&came_from, cur, start);
         }
 
-        let g = *g_score.get(&(x, y)).unwrap_or(&i32::MAX);
+        let g = *g_score.get(&cur).unwrap_or(&i32::MAX);
 
         for (dx, dy) in &DIRS {
             let nx = x + dx;
@@ -76,9 +97,9 @@ pub fn astar_next_step_safe(
 
             if new_g < *g_score.get(&next).unwrap_or(&i32::MAX) {
                 g_score.insert(next, new_g);
-                came_from.insert(next, (x, y));
+                came_from.insert(next, cur);
                 let h = chebyshev(next, goal_snapped);
-                heap.push(Reverse((new_g + h, next)));
+                heap.push(Reverse((new_g + h, nx, ny)));
             }
         }
     }
@@ -86,8 +107,24 @@ pub fn astar_next_step_safe(
     None
 }
 
-/// Găsește cel mai apropiat punct care RUPE linia de vizibilitate cu inamicul.
-/// Perfect pentru a te ascunde cât timp ești pe cooldown.
+fn reconstruct_first_step(
+    came_from: &HashMap<(i32, i32), (i32, i32)>,
+    end: (i32, i32),
+    start: (i32, i32),
+) -> Option<(i32, i32)> {
+    let mut cur = end;
+    loop {
+        let prev = *came_from.get(&cur)?;
+        if prev == start {
+            return Some(cur);
+        }
+        if prev == cur {
+            return None;
+        }
+        cur = prev;
+    }
+}
+
 pub fn find_hideout(
     my_pos: (i32, i32),
     enemy_pos: (i32, i32),
@@ -95,11 +132,14 @@ pub fn find_hideout(
     width: i32,
     height: i32,
 ) -> Option<(i32, i32)> {
-    let mut best_hideout: Option<(i32, (i32, i32))> = None;
+    let mut best: Option<(i32, (i32, i32))> = None;
 
-    // Căutăm într-o rază locală pentru viteză (ex: 15 unități distanță)
-    for dx in (-15..=15).step_by(3) {
-        for dy in (-15..=15).step_by(3) {
+    for dx in (-18i32..=18).step_by(3) {
+        for dy in (-18i32..=18).step_by(3) {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+
             let nx = my_pos.0 + dx;
             let ny = my_pos.1 + dy;
 
@@ -107,17 +147,16 @@ pub fn find_hideout(
                 continue;
             }
 
-            // Dacă inamicul NU ne poate vedea din această poziție, e un hideout valid
             if !has_clear_shot((nx, ny), enemy_pos, walls) {
                 let dist = manhattan(my_pos, (nx, ny));
-                if best_hideout.is_none() || dist < best_hideout.unwrap().0 {
-                    best_hideout = Some((dist, (nx, ny)));
+                if best.is_none() || dist < best.unwrap().0 {
+                    best = Some((dist, (nx, ny)));
                 }
             }
         }
     }
 
-    best_hideout.map(|(_, p)| p)
+    best.map(|(_, p)| p)
 }
 
 pub fn manhattan(a: (i32, i32), b: (i32, i32)) -> i32 {
