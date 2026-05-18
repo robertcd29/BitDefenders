@@ -2,6 +2,7 @@ mod bot;
 mod game;
 mod net;
 mod protocol;
+mod mcts;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};

@@ -1,1 +1,1 @@
-D:\BitdefenderRust\game\target\debug\game.exe: D:\BitdefenderRust\game\src\bot.rs D:\BitdefenderRust\game\src\game.rs D:\BitdefenderRust\game\src\main.rs D:\BitdefenderRust\game\src\net.rs D:\BitdefenderRust\game\src\protocol.rs
+C:\w5bit\BitdefenderRust\game\target\debug\game.exe: C:\w5bit\BitdefenderRust\game\src\bot.rs C:\w5bit\BitdefenderRust\game\src\game.rs C:\w5bit\BitdefenderRust\game\src\main.rs C:\w5bit\BitdefenderRust\game\src\mcts.rs C:\w5bit\BitdefenderRust\game\src\net.rs C:\w5bit\BitdefenderRust\game\src\protocol.rs

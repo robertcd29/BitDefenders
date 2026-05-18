@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::protocol::{GameConfig, Hero, MoveArgs, ShootArgs, StartMatchArgs, StartTurnArgs};
 use crate::game;
+use crate::mcts::MctsSolver;
 
+#[derive(Clone)]
 pub enum Order {
     Move(MoveArgs),
     Shoot(ShootArgs),
@@ -13,15 +15,17 @@ pub struct Bot {
     config: GameConfig,
     last_seen: HashMap<i32, (i32, i32)>,
     turn: i32,
+    solver: MctsSolver,
 }
 
 impl Bot {
     pub fn new(args: StartMatchArgs) -> Self {
         Self {
             my_player_id: args.your_player_id,
-            config: args.config,
+            config: args.config.clone(),
             last_seen: HashMap::new(),
             turn: 0,
+            solver: MctsSolver::new(args.config, args.your_player_id),
         }
     }
 
@@ -44,12 +48,106 @@ impl Bot {
             .filter(|h| h.owner_id != self.my_player_id)
             .collect();
 
-        my_heroes.iter().enumerate().map(|(i, hero)| {
-            self.decide(hero, i, &enemies, &walls)
-        }).collect()
+        let mut orders = Vec::new();
+
+        if my_heroes.is_empty() {
+            return orders;
+        }
+
+        let leader = my_heroes[0];
+        let pos_leader = (leader.x, leader.y);
+
+        let mut min_dist = i32::MAX;
+        for e in &enemies {
+            let d = game::manhattan(pos_leader, (e.x, e.y));
+            if d < min_dist {
+                min_dist = d;
+            }
+        }
+
+        let leader_order = if !enemies.is_empty() && min_dist <= 30 {
+            let mcts_orders = self.solver.search(state, &vec![leader], &enemies, &walls);
+            mcts_orders.into_iter().next().unwrap_or_else(|| self.decide(leader, 0, &enemies, &walls))
+        } else {
+            self.decide(leader, 0, &enemies, &walls)
+        };
+
+        orders.push(leader_order.clone());
+
+        if my_heroes.len() > 1 {
+            let follower = my_heroes[1];
+            let pos_follower = (follower.x, follower.y);
+
+            let follower_order = if pos_follower != pos_leader {
+                if follower.cooldown == 0 {
+                    let mut shot = None;
+                    for e in &enemies {
+                        if game::has_clear_shot(pos_follower, (e.x, e.y), &walls) {
+                            shot = Some(Order::Shoot(ShootArgs {
+                                hero_id: follower.id,
+                                x: e.x,
+                                y: e.y,
+                                comment: None,
+                            }));
+                            break;
+                        }
+                    }
+                    if let Some(s) = shot {
+                        s
+                    } else {
+                        let next = game::astar_next_step_safe(pos_follower, pos_leader, self.config.width, self.config.height, &walls)
+                            .unwrap_or(pos_follower);
+                        Order::Move(MoveArgs {
+                            hero_id: follower.id,
+                            x: next.0,
+                            y: next.1,
+                            comment: None,
+                        })
+                    }
+                } else {
+                    let next = game::astar_next_step_safe(pos_follower, pos_leader, self.config.width, self.config.height, &walls)
+                        .unwrap_or(pos_follower);
+                    Order::Move(MoveArgs {
+                        hero_id: follower.id,
+                        x: next.0,
+                        y: next.1,
+                        comment: None,
+                    })
+                }
+            } else {
+                match &leader_order {
+                    Order::Move(m) => Order::Move(MoveArgs {
+                        hero_id: follower.id,
+                        x: m.x,
+                        y: m.y,
+                        comment: None,
+                    }),
+                    Order::Shoot(s) => {
+                        if follower.cooldown == 0 {
+                            Order::Shoot(ShootArgs {
+                                hero_id: follower.id,
+                                x: s.x,
+                                y: s.y,
+                                comment: None,
+                            })
+                        } else {
+                            Order::Move(MoveArgs {
+                                hero_id: follower.id,
+                                x: pos_follower.0,
+                                y: pos_follower.1,
+                                comment: None,
+                            })
+                        }
+                    }
+                }
+            };
+            orders.push(follower_order);
+        }
+
+        orders
     }
 
-    fn decide(
+    pub fn decide(
         &self,
         hero: &Hero,
         hero_index: usize,
@@ -75,7 +173,6 @@ impl Bot {
 
         let dest = self.pick_destination(hero, hero_index, enemies, walls);
 
-
         let next = if dest != pos {
             game::astar_next_step_safe(pos, dest, self.config.width, self.config.height, walls)
                 .unwrap_or(pos)
@@ -87,7 +184,7 @@ impl Bot {
             hero_id: hero.id,
             x: next.0,
             y: next.1,
-            comment: "Moving".to_string(),
+            comment: None,
         })
     }
 
@@ -104,8 +201,7 @@ impl Bot {
         sorted_enemies.sort_by_key(|e| e.hp);
 
         let epos: (i32, i32) = if !sorted_enemies.is_empty() {
-            let idx = hero_index.min(sorted_enemies.len() - 1);
-            (sorted_enemies[idx].x, sorted_enemies[idx].y)
+            (sorted_enemies[0].x, sorted_enemies[0].y) 
         } else {
             if let Some(&lp) = self.last_seen.values()
                 .min_by_key(|&&p| game::manhattan(pos, p))
