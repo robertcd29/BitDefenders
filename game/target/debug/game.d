@@ -1,0 +1,1 @@
+C:\w5bit\BitdefenderRust\game\target\debug\game.exe: C:\w5bit\BitdefenderRust\game\src\bot.rs C:\w5bit\BitdefenderRust\game\src\game.rs C:\w5bit\BitdefenderRust\game\src\main.rs C:\w5bit\BitdefenderRust\game\src\mcts.rs C:\w5bit\BitdefenderRust\game\src\net.rs C:\w5bit\BitdefenderRust\game\src\protocol.rs
