@@ -48,100 +48,59 @@ impl Bot {
             .filter(|h| h.owner_id != self.my_player_id)
             .collect();
 
+        if my_heroes.is_empty() {
+            return Vec::new();
+        }
+
         let mut orders = Vec::new();
 
-        if my_heroes.is_empty() {
+        let enemies_visible = !enemies.is_empty();
+        let enemies_known = enemies_visible || !self.last_seen.is_empty();
+
+        if !enemies_known {
+            let intercept = game::snap_to_grid((self.config.width / 4, self.config.height / 2));
+            for hero in &my_heroes {
+                let pos = (hero.x, hero.y);
+                let next = if pos != intercept {
+                    game::astar_next_step_safe(pos, intercept, self.config.width, self.config.height, &walls)
+                        .unwrap_or(pos)
+                } else {
+                    pos
+                };
+                orders.push(Order::Move(MoveArgs {
+                    hero_id: hero.id,
+                    x: next.0,
+                    y: next.1,
+                    comment: None,
+                }));
+            }
             return orders;
         }
 
-        let leader = my_heroes[0];
-        let pos_leader = (leader.x, leader.y);
-
-        let mut min_dist = i32::MAX;
-        for e in &enemies {
-            let d = game::manhattan(pos_leader, (e.x, e.y));
-            if d < min_dist {
-                min_dist = d;
-            }
-        }
-
-        let leader_order = if !enemies.is_empty() && min_dist <= 30 {
-            let mcts_orders = self.solver.search(state, &vec![leader], &enemies, &walls);
-            mcts_orders.into_iter().next().unwrap_or_else(|| self.decide(leader, 0, &enemies, &walls))
-        } else {
-            self.decide(leader, 0, &enemies, &walls)
+        let use_mcts = enemies_visible && {
+            let min_dist = my_heroes.iter()
+                .flat_map(|me| enemies.iter().map(move |e| game::manhattan((me.x, me.y), (e.x, e.y))))
+                .min()
+                .unwrap_or(i32::MAX);
+            min_dist <= 80
         };
 
-        orders.push(leader_order.clone());
+        if use_mcts {
+            let mcts_orders = self.solver.search(state, &my_heroes, &enemies, &walls);
+            if mcts_orders.len() == my_heroes.len() {
+                return mcts_orders;
+            }
+            for (i, hero) in my_heroes.iter().enumerate() {
+                let order = mcts_orders.get(i)
+                    .cloned()
+                    .unwrap_or_else(|| self.decide(hero, i, &enemies, &walls));
+                orders.push(order);
+            }
+            return orders;
+        }
 
-        if my_heroes.len() > 1 {
-            let follower = my_heroes[1];
-            let pos_follower = (follower.x, follower.y);
-
-            let follower_order = if pos_follower != pos_leader {
-                if follower.cooldown == 0 {
-                    let mut shot = None;
-                    for e in &enemies {
-                        if game::has_clear_shot(pos_follower, (e.x, e.y), &walls) {
-                            shot = Some(Order::Shoot(ShootArgs {
-                                hero_id: follower.id,
-                                x: e.x,
-                                y: e.y,
-                                comment: None,
-                            }));
-                            break;
-                        }
-                    }
-                    if let Some(s) = shot {
-                        s
-                    } else {
-                        let next = game::astar_next_step_safe(pos_follower, pos_leader, self.config.width, self.config.height, &walls)
-                            .unwrap_or(pos_follower);
-                        Order::Move(MoveArgs {
-                            hero_id: follower.id,
-                            x: next.0,
-                            y: next.1,
-                            comment: None,
-                        })
-                    }
-                } else {
-                    let next = game::astar_next_step_safe(pos_follower, pos_leader, self.config.width, self.config.height, &walls)
-                        .unwrap_or(pos_follower);
-                    Order::Move(MoveArgs {
-                        hero_id: follower.id,
-                        x: next.0,
-                        y: next.1,
-                        comment: None,
-                    })
-                }
-            } else {
-                match &leader_order {
-                    Order::Move(m) => Order::Move(MoveArgs {
-                        hero_id: follower.id,
-                        x: m.x,
-                        y: m.y,
-                        comment: None,
-                    }),
-                    Order::Shoot(s) => {
-                        if follower.cooldown == 0 {
-                            Order::Shoot(ShootArgs {
-                                hero_id: follower.id,
-                                x: s.x,
-                                y: s.y,
-                                comment: None,
-                            })
-                        } else {
-                            Order::Move(MoveArgs {
-                                hero_id: follower.id,
-                                x: pos_follower.0,
-                                y: pos_follower.1,
-                                comment: None,
-                            })
-                        }
-                    }
-                }
-            };
-            orders.push(follower_order);
+        for (i, hero) in my_heroes.iter().enumerate() {
+            orders.push(self.decide(hero, i, &enemies, &walls));
         }
 
         orders
@@ -156,11 +115,10 @@ impl Bot {
     ) -> Order {
         let pos = (hero.x, hero.y);
 
-        if hero.cooldown == 0 {
-            let target = enemies.iter()
-                .filter(|e| game::has_clear_shot(pos, (e.x, e.y), walls))
-                .min_by_key(|e| e.hp);
+        let stagger_shoot = hero_index > 0 && (self.turn % 2 == 0);
 
+        if hero.cooldown == 0 && !stagger_shoot {
+            let target = self.pick_shoot_target(hero, enemies, walls);
             if let Some(t) = target {
                 return Order::Shoot(ShootArgs {
                     hero_id: hero.id,
@@ -188,6 +146,35 @@ impl Bot {
         })
     }
 
+    fn pick_shoot_target<'a>(
+        &self,
+        hero: &Hero,
+        enemies: &[&'a Hero],
+        walls: &HashSet<(i32, i32)>,
+    ) -> Option<&'a Hero> {
+        let pos = (hero.x, hero.y);
+        let damage = self.config.hero_types.get("sniper").map(|s| s.projectile_damage).unwrap_or(1000);
+
+        let mut visible: Vec<&Hero> = enemies.iter()
+            .copied()
+            .filter(|e| game::has_clear_shot(pos, (e.x, e.y), walls))
+            .collect();
+
+        if visible.is_empty() {
+            return None;
+        }
+
+        visible.sort_by_key(|e| {
+            let dist = game::manhattan(pos, (e.x, e.y));
+            let finishing_blow = if e.hp <= damage { -100000 } else { 0 };
+            let low_hp_bonus = if e.hp <= damage * 2 { -5000 } else { 0 };
+            let shots_to_kill = (e.hp + damage - 1) / damage;
+            finishing_blow + low_hp_bonus + shots_to_kill * 100 + dist
+        });
+
+        visible.into_iter().next()
+    }
+
     fn pick_destination(
         &self,
         hero: &Hero,
@@ -197,28 +184,50 @@ impl Bot {
     ) -> (i32, i32) {
         let pos = (hero.x, hero.y);
 
-        let mut sorted_enemies: Vec<&Hero> = enemies.to_vec();
-        sorted_enemies.sort_by_key(|e| e.hp);
-
-        let epos: (i32, i32) = if !sorted_enemies.is_empty() {
-            (sorted_enemies[0].x, sorted_enemies[0].y) 
-        } else {
-            if let Some(&lp) = self.last_seen.values()
-                .min_by_key(|&&p| game::manhattan(pos, p))
-            {
-                lp
-            } else {
-                return self.explore(hero_index);
-            }
-        };
-
         let my_max_hp = self.config.hero_types.get("sniper")
             .map(|s| s.max_hp)
             .unwrap_or(3000);
-        let low_hp = hero.hp <= my_max_hp / 3;
+        let low_hp = hero.hp <= my_max_hp / 2;
+        let critical_hp = hero.hp <= my_max_hp / 3;
 
         let enemy_can_see_us = enemies.iter()
             .any(|e| game::has_clear_shot((e.x, e.y), pos, walls));
+
+        let focus_fired = enemies.iter()
+            .filter(|e| game::has_clear_shot((e.x, e.y), pos, walls))
+            .count() >= 2;
+
+        let target_enemy = if !enemies.is_empty() {
+            if hero.cooldown == 0 {
+                enemies.iter().copied()
+                    .min_by_key(|e| {
+                        let dist = game::manhattan(pos, (e.x, e.y));
+                        let hp_bonus = if e.hp <= my_max_hp / 3 { -1000 } else { 0 };
+                        dist + hp_bonus
+                    })
+            } else {
+                enemies.iter().copied().min_by_key(|e| e.hp)
+            }
+        } else {
+            None
+        };
+
+        let epos: (i32, i32) = if let Some(e) = target_enemy {
+            (e.x, e.y)
+        } else if let Some(&lp) = self.last_seen.values()
+            .min_by_key(|&&p| game::manhattan(pos, p))
+        {
+            lp
+        } else {
+            return self.explore(hero_index);
+        };
+
+        if critical_hp || focus_fired {
+            if let Some(h) = game::find_hideout(pos, epos, walls, self.config.width, self.config.height) {
+                return h;
+            }
+            return self.strafe(pos, epos, walls, false);
+        }
 
         if low_hp && enemy_can_see_us {
             if let Some(h) = game::find_hideout(pos, epos, walls, self.config.width, self.config.height) {
@@ -230,10 +239,10 @@ impl Bot {
         if hero.cooldown == 0 {
             if game::has_clear_shot(pos, epos, walls) {
                 let dist = game::manhattan(pos, epos);
-                if dist >= 6 && dist <= 24 {
+                if dist >= 12 && dist <= 24 {
                     return pos;
                 }
-                if dist < 6 {
+                if dist < 12 {
                     return self.strafe(pos, epos, walls, true);
                 }
                 return self.approach_with_los(pos, epos, walls);
@@ -245,6 +254,10 @@ impl Bot {
         }
 
         if enemy_can_see_us {
+            let dist = game::manhattan(pos, epos);
+            if dist < 12 {
+                return self.strafe(pos, epos, walls, false);
+            }
             if let Some(h) = game::find_hideout(pos, epos, walls, self.config.width, self.config.height) {
                 return h;
             }
@@ -398,8 +411,9 @@ impl Bot {
                 if game::has_clear_shot((nx, ny), enemy_pos, walls) {
                     let dist_to_me = game::manhattan(my_pos, (nx, ny));
                     let dist_to_enemy = game::manhattan((nx, ny), enemy_pos);
-                    let penalty = if dist_to_enemy < 6 { 500 } else { 0 };
-                    let score = dist_to_me + penalty;
+                    let too_close_penalty = if dist_to_enemy < 6 { 500 } else { 0 };
+                    let too_far_penalty = if dist_to_enemy > 30 { (dist_to_enemy - 30) * 2 } else { 0 };
+                    let score = dist_to_me + too_close_penalty + too_far_penalty;
                     if best.is_none() || score < best.unwrap().0 {
                         best = Some((score, (nx, ny)));
                     }
@@ -410,17 +424,8 @@ impl Bot {
         best.map(|(_, p)| p)
     }
 
-    fn explore(&self, hero_index: usize) -> (i32, i32) {
-        let w = self.config.width;
-        let h = self.config.height;
-        let quadrant = (self.turn / 8 + hero_index as i32) % 4;
-        let target = match quadrant {
-            0 => (w / 4, h / 4),
-            1 => (w * 3 / 4, h / 4),
-            2 => (w / 4, h * 3 / 4),
-            _ => (w * 3 / 4, h * 3 / 4),
-        };
-        game::snap_to_grid(target)
+    fn explore(&self, _hero_index: usize) -> (i32, i32) {
+        game::snap_to_grid((self.config.width / 2, self.config.height / 2))
     }
 }
 
