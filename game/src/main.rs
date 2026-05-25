@@ -54,8 +54,8 @@ async fn main() {
                     cmd::READY => {
                         println!("READY");
                         send(&mut write, WebSocketMessage::new(
-                            cmd::PRACTICE, PracticeArgs { seed: None }
-                            // cmd::CHALLENGE, ChallengeArgs { name: None, seed: None, ranked: Some(true) }
+                            cmd::PRACTICE, PracticeArgs { seed: None },
+                            // cmd::CHALLENGE, ChallengeArgs { name: None, seed: None, ranked: Some(false) }
                         )).await;
                     }
                     cmd::START_MATCH => {
